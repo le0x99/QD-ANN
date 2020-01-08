@@ -1,0 +1,32 @@
+from DailyTrends.collect import collect_data
+import pickle
+import os
+
+os.chdir(b"data and code\data")
+#load companies
+with open("companies_prices", "rb") as f:
+    companies = pickle.load(f)
+
+    
+Q = ["stock", "share"]
+a = " - [*] - "
+b = " - [!] - "
+
+
+for company in companies:
+    ticker, name = company["ticker"], company["name"]
+    if ticker in os.listdir():
+        print(ticker, " already collected.")
+        continue
+    print(ticker, name )
+    company["query_data"] = dict()
+    print(a + " Gathering data for {} ({})".format(name, ticker))
+    Q_ = [ticker, name] + [_+" "+suffix for _ in [ticker, name] for suffix in Q]
+    for q in Q_:
+        print(a + "Getting Query <{}>".format(q))
+        company["query_data"][q] = collect_data(q)
+    print(a + "SAVING")
+    with open("{}".format(ticker), "wb") as f:
+        pickle.dump(company, f)
+        
+            

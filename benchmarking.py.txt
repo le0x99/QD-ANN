@@ -1,0 +1,236 @@
+
+import os
+import matplotlib.pyplot as plt
+%matplotlib inline
+import random
+plt.rcParams["figure.figsize"] = (14, 11)
+plt.rcParams["figure.dpi"] = 100
+plt.style.use("seaborn-pastel");plt.style.use("classic");
+os.chdir(b"data and code\data")
+import pandas as pd
+import numpy as np
+import pickle
+from sklearn.metrics import mean_squared_error as MSE
+#load data
+with open("formatted_data", "rb") as f:
+    data = pickle.load(f)
+
+## The baseline model 
+from sklearn.linear_model import LinearRegression as LR
+
+#load price data
+with open("companies_prices", "rb") as f:
+    prices = {_["ticker"] : _["price_data"] for _ in pickle.load(f)}
+
+#load test predictions from ann
+with open("test_eval", "rb") as f:
+    evaluation = pickle.load(f)
+    
+#Create a price dataframe to calculate returns
+price_df = pd.DataFrame({ name : prices[name]["adjclose"] for name in prices })
+
+#add predictions from the baseline models
+start_testing = '2017-08-08'
+for ticker in data:
+    company = data[ticker]
+    train, test = company[:start_testing], company[start_testing:]
+    X_train, y_train = train.values[:,1:3], train.values[:,0]
+    X_test, y_test = test.values[:,1:3], test.values[:,0]
+    AR2 = LR()
+    AR2.fit(X_train, y_train)
+    evaluation[ticker]["AR(2)"] = AR2.predict(X_test)
+    evaluation[ticker]["true"] = test["V(T)"].values
+    evaluation[ticker]["T-1"] = test["V(T-1)"].values
+
+
+
+
+#calculate MSEs company wise
+errors = pd.DataFrame({ "T-1" : [MSE(evaluation[c]["true"], evaluation[c]["T-1"]) for c in evaluation],
+                       "AR(2)" : [MSE(evaluation[c]["true"], evaluation[c]["AR(2)"]) for c in evaluation],
+                       "ANN" : [MSE(evaluation[c]["true"], evaluation[c]["ANN"]) for c in evaluation]})
+print((errors*100_000).describe())
+#rank per timestep
+def vola_ranking(week, predictor="true", size=10, method="min_vola"):
+    ranking = []
+    global evaluation
+    while len(ranking) != size:
+        if method == "min_vola":
+            minval = min([evaluation[ticker][predictor][week] for ticker in evaluation if ticker not in ranking])
+        elif method == "max_vola":
+            minval = max([evaluation[ticker][predictor][week] for ticker in evaluation if ticker not in ranking])
+        for ticker in evaluation:
+            if ticker not in ranking:
+                if evaluation[ticker][predictor][week] == minval:
+                    ranking.append(ticker)
+    return ranking
+
+def compare_portfolios(psize):
+    true_portfolios = [vola_ranking(week, "true", size=psize) for week in range(100) ]
+    m0_portfolios = [vola_ranking(week, "T-1", size=psize) for week in range(100) ]
+    m1_portfolios = [vola_ranking(week, "AR(2)", size=psize) for week in range(100) ]
+    ann_portfolios = [vola_ranking(week, "ANN", size=psize) for week in range(100) ]
+    m0, m1, ann = 0, 0, 0
+    weeks = list()
+    for i in range(len(true_portfolios)):
+        inc0 = len([stock for stock in m0_portfolios[i] if stock in true_portfolios[i]])
+        m0 += inc0
+        inc1 = len([stock for stock in m1_portfolios[i] if stock in true_portfolios[i]])
+        m1 += inc1
+        incann = len([stock for stock in ann_portfolios[i] if stock in true_portfolios[i]])
+        ann += incann
+        weeks.append([inc0, inc1, incann])
+    return pd.DataFrame(weeks, columns=["M0", "M1", "ANN"])
+    
+cc = compare_portfolios(10)  
+
+        
+    
+    ## compare 
+    
+def get_returns(predictor="true", method="min_vola", portfolio_size=10  ):
+    global prices
+    global data
+    global evaluation
+    portfolio = [ vola_ranking(week, predictor=predictor, method=method,size=portfolio_size) for week in range(100) ]
+    indices = [np.datetime64('2017-08-07T00:00:00.000000000')] + list(data["AAPL"][start_testing:].index.values)    
+    
+
+     #return of a stock given a timeframe   
+    def R(stock, start, end, in_percent=True):
+        old = prices[stock].loc[start]["adjclose"]
+        new = prices[stock].loc[end]["adjclose"]
+        r = new/old - 1
+        #logr = np.log(1+r)
+        return r if not in_percent else r * 100
+     #return of a portfolio given a timeframe
+    def r_p(portfolio, start, end, in_percent=True):
+        returns = list()
+        for stock in portfolio:
+            returns.append(R(stock, start, end, in_percent))
+        return sum(returns)/len(returns)
+
+    return pd.Series([r_p(portfolio[week], indices[week], indices[week+1]) for week in range(99)], index=data["AAPL"][start_testing:].index.values[:-1])
+
+
+market = get_returns(portfolio_size=435)
+def compare_returns(psize):
+    return pd.DataFrame({"$MEVP$" : get_returns(predictor="true", method="min_vola", portfolio_size=psize),
+                         "$Market$" : market,
+                        "$\hat{MEVP}_{M_{0}}$" : get_returns(predictor="T-1", method="min_vola", portfolio_size=psize),
+                        "$\hat{MEVP}_{M_{1}}$" : get_returns(predictor="AR(2)", method="min_vola", portfolio_size=psize),
+                        "$\hat{MEVP}_{QDANN}$" : get_returns(predictor="ANN", method="min_vola", portfolio_size=psize)})
+
+##portfolio size
+n = 20
+#compare the returns of thee portfolios
+compare_r = compare_returns(n)
+fig, ax = plt.subplots(facecolor='white')    
+compare_r.cumsum().plot(grid=True, ax=ax);plt.title("$Cumulative \ Returns $ (100w)")
+ax.set_facecolor("lightslategray")
+ax.set_facecolor("white")
+#estimate densities
+fig, ax = plt.subplots(facecolor='white');plt.title("$Weekly \ Portfolio \ Return$ (Kernel = Gauss, $h=1.33$)")
+compare_r.plot.density(1.33, grid=True, ax=ax)
+ax.set_facecolor("lightslategray")
+ax.set_facecolor("white")
+
+
+
+def compare_predictions(stock, method="values"):
+    print(stock)
+    return pd.DataFrame({"$True$" : evaluation[stock]["true"], "$M_{0}$" : evaluation[stock]["T-1"],
+                  "$M_{1}$" : evaluation[stock]["AR(2)"],
+                  "QD-ANN" :evaluation[stock]["ANN"].reshape(100,) }, index=data[stock][start_testing:].index)
+    
+compare_predictions(random.choice(list(evaluation.keys())))[["QD-ANN","$M_{1}$", "$True$" ]].rolling(2).mean().plot()
+
+
+# aggregated predictions (globally)
+def global_preds():
+    true = []
+    M0 = []
+    M1 = []
+    ANN = []
+    #SSE_M0 = []
+    for stock in evaluation:
+        true.append(evaluation[stock]["true"])
+        M0.append(evaluation[stock]["T-1"])
+        M1.append(evaluation[stock]["AR(2)"])
+        ANN.append(evaluation[stock]["ANN"].reshape(100,))
+    M0 = np.concatenate(M0)
+    M1 = np.concatenate(M1)
+    true = np.concatenate(true)
+    ANN = np.concatenate(ANN)
+    preds = pd.DataFrame({"M0" : M0, "M1" : M1, "TRUE" : true, "ANN" : ANN}) 
+    preds["E(M1)"] = preds["TRUE"] - preds["M1"]
+    preds["E(M0)"] = preds["TRUE"] - preds["M0"]
+    preds["E(ANN)"] = preds["TRUE"] - preds["ANN"]
+    preds["SE(ANN)"] = (preds.TRUE - preds.ANN)**2
+    preds["SE(M0)"] = (preds.TRUE - preds.M0)**2
+    preds["SE(M1)"] = (preds.TRUE - preds.M1)**2
+    return preds
+
+preds = global_preds()
+#dist of errors
+fig, ax = plt.subplots(facecolor='white')
+preds[["E(ANN)", "E(M1)", "E(M0)"]].boxplot(ax=ax)
+ax.set_facecolor("lightslategray")
+ax.set_facecolor("white")
+
+
+
+### NOT RELEVANT FOR THE THESIS ###
+
+
+
+##portfolios in the first week assuming euqal weight per stock
+def trade(predictor = "AR(2)", method="min_vola",
+          portfolio_size=10):
+    
+    portfolio = [ vola_ranking(week, data=predictor, method=method,size=size) for week in range(100) ]
+    indices = [np.datetime64('2017-08-07T00:00:00.000000000')] + list(data["AAPL"][start_testing:].index.values)
+    ## In t=0 the investor anticipates the predicted volatility.
+    ## He buys the t=1 MVP stocks in t=0 .
+    ## t0 = 2017-08-07 
+    ## buy portfolio[0] @ t0 = 2017-08-07 
+    P = { stock : prices[stock].loc[indices[0]]["adjclose"] for stock in portfolio[0] }
+    realizations = list()
+    weekly_real, weekly_tr = list(), list()
+    transactions = 10
+    for t in range(1, 100):
+        gain = 0
+        #weekly_transactions = 0
+        for stock in P:
+            if stock not in portfolio[t]:
+                transactions += 1
+                #weekly_transactions +=1
+                buying_price = P[stock]
+                selling_price = prices[stock].loc[indices[t]]["adjclose"]
+                realized = selling_price - buying_price
+                gain += realized
+                realizations.append(realized)
+                #print("selling ", stock, "@", selling_price)
+                
+                P[stock] = None
+        for stock in portfolio[t]:
+            if stock not in P:
+                transactions +=1
+                #weekly_transactions +=1
+                buying_price = prices[stock].loc[indices[t]]["adjclose"]
+                P[stock] = buying_price
+                #print("buying", stock, "@", buying_price)
+        P = { stock : P[stock] for stock in P if P[stock] != None }
+        #weekly_tr.append(weekly_transactions)
+        #weekly_real.append(weekly_realization)
+
+#profit per transaction and cumulative profit
+#ax = pd.Series(realizations).cumsum().plot();pd.Series(realizations).plot(ax=ax,grid=True);plt.title("profit per transaction and cumulative profit")
+ 
+
+
+
+
+
+
+

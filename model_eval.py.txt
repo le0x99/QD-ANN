@@ -1,0 +1,294 @@
+from copy import deepcopy as copy
+import pickle
+import pandas as pd
+import numpy as np
+import os
+os.chdir(b"data and code\data")
+import matplotlib.pyplot as plt
+%matplotlib inline
+plt.rcParams["figure.figsize"] = (10,3.5)
+plt.rcParams["figure.dpi"] = 70
+import pandas
+from tensorflow.keras.layers import Dropout, Dense, BatchNormalization
+from tensorflow.keras.models import Sequential
+from sklearn.model_selection import KFold
+from sklearn.model_selection import ShuffleSplit
+from sklearn.preprocessing import MinMaxScaler 
+from sklearn.metrics import mean_squared_error as MSE
+from tensorflow.keras import optimizers
+from tensorflow.keras.initializers import he_uniform
+
+import gc
+from tensorflow.keras import backend
+global_random_seed = 42
+
+
+## Models to test ( random permutations of n_layers, n_neurons )
+# Fixed optimizer and fixed learning rate
+# Batchnorm is used 
+# dropout of .2 is used
+#random permuations:
+models = [[[300, 256, 128], 0.001, 0.2, True, 'rms', False, True],
+  [[256, 256, 256], 0.001, 0.2, True, 'rms', False, True],
+  [[64, 32, 16], 0.001, 0.2, True, 'rms', False, True],
+  [[256], 0.001, 0.2, True, 'rms', False, True],
+  [[16, 16, 16], 0.001, 0.2, True, 'rms', False, True],
+  [[256, 128], 0.001, 0.2, True, 'rms', False, True],
+  [[256, 128, 64, 32, 16], 0.001, 0.2, True, 'rms', False, True],
+  [[128, 64, 32, 16, 8, 4], 0.001, 0.2, True, 'rms', False, True],
+  [[512, 256, 128, 64], 0.001, 0.2, True, 'rms', False, True],
+  [[128, 128, 128], 0.001, 0.2, True, 'rms', False, True],
+  [[32, 32, 32, 32], 0.001, 0.2, True, 'rms', False, True],
+  [[32, 32 ], 0.001, 0.2, True, 'rms', False, True],
+  [[40, 49, 20], 0.001, 0.2, True, 'rms', False, True],
+  [[256, 32 ], 0.001, 0.2, True, 'rms', False, True],
+  [[64, 64, 32 ], 0.001, 0.2, True, 'rms', False, True],
+  [[412, 256, 128  ], 0.001, 0.2, True, 'rms', False, True],
+  [[64, 64], 0.001, 0.2, True, 'rms', False, True],
+  [[64, 32, 16, 8, 4, 2], 0.001, 0.2, True, 'rms', False, True],
+  [[64, 256, 64], 0.001, 0.2, True, 'rms', False, True],
+  [[64, 32], 0.001, 0.2, True, 'rms', False, True],
+  [[16, 16, 16, 16 ], 0.001, 0.2, True, 'rms', False, True],
+  [[300, 300], 0.001, 0.2, True, 'rms', False, True],
+  [[300, 300, 300], 0.001, 0.2, True, 'rms', False, True],
+  [[128, 256, 128], 0.001, 0.2, True, 'rms', False, True],
+  [[16, 32, 16, 8], 0.001, 0.2, True, 'rms', False, True],
+  [[1024, 1024, 1024], 0.001, 0.5, True, 'rms', False, True],
+  [[16, 32, 16, 8], 0.001, 0.2, True, 'rms', False, True],
+  [[8, 8, 2], 0.001, 0.2, True, 'rms', False, True],
+  [[16, 32, 2], 0.001, 0.2, True, 'rms', False, True],
+  [[300, 200, 100, 50], 0.001, 0.2, True, 'rms', False, True]]
+
+def to_df(r):
+    l = []
+    for i in range(0, len(r)):
+        obs = r[i]["model"] + [r[i]["mean"]*100_000] + [r[i]["std"]*100_000]
+        l.append(obs)
+    return pd.DataFrame(l)
+
+
+def build_model(hidden_layers, lr, dropout, batchnorm, optimizer,input_regularization, input_normalization,
+                activation="relu", input_dim=54):
+    if optimizer=="rms":
+        opt = optimizers.RMSprop(learning_rate=lr)
+    elif optimizer=="sgd":
+        opt = optimizers.SGD(learning_rate=lr)
+    elif optimizer == "nadam":
+        opt = optimizers.Nadam(learning_rate=lr)
+    model = Sequential()
+    #First hidden layer
+    if input_normalization:
+        model.add(BatchNormalization(input_shape=(input_dim,)))
+        if input_regularization and dropout > 0:
+            model.add(Dropout(dropout))
+            model.add(Dense(hidden_layers[0],kernel_initializer=he_uniform(seed=global_random_seed),activation=activation, use_bias=False))
+        else:
+             model.add(Dense(hidden_layers[0],kernel_initializer=he_uniform(seed=global_random_seed),activation=activation, use_bias=False))
+    
+    else:
+        if input_regularization and dropout > 0:
+            model.add(Dropout(dropout,input_shape=(input_dim,)))
+            model.add(Dense(hidden_layers[0],kernel_initializer=he_uniform(seed=global_random_seed),activation=activation, use_bias=False))
+        else:
+            model.add(Dense( hidden_layers[0],input_dim=input_dim,kernel_initializer=he_uniform(seed=global_random_seed),activation=activation, use_bias=False))
+    if batchnorm:
+        model.add(BatchNormalization(scale=False))
+    if dropout > 0:
+        model.add(Dropout(dropout))
+    #Additional layers
+    for layer in hidden_layers[1:]:
+        model.add(Dense(layer,kernel_initializer=he_uniform(seed=global_random_seed), activation=activation, use_bias=False))
+        if batchnorm:
+            model.add(BatchNormalization(scale=False))  
+        if dropout > 0:        
+            model.add(Dropout(dropout))
+    #Output layer
+    model.add(Dense(1, activation='linear'))
+    model.compile(loss='mse', optimizer=opt, metrics=['mse'])
+    return model
+
+def cross_validate(df, model_params, splits=3, test_size=.2,
+                   max_epochs=150, batch_size=128,
+                   early_stop=False, patience=15,
+                   method="random_shuffle"):
+    input_dim = df.shape[1]-1
+    X, y = df.values[:,1:], df.values[:,0]
+    if method == "kfold":
+        cv = KFold(n_splits=splits, random_state=global_random_seed, shuffle=True)
+    elif method == "random_shuffle":
+        cv = ShuffleSplit(n_splits=splits, test_size=test_size, random_state=global_random_seed)   
+    result = {"MSE" : [], "val_dfs" : []}
+    split = 1
+    for train_index, test_index in cv.split(X):
+        model = build_model(hidden_layers=model_params[0],
+                            lr=model_params[1],
+                            dropout=model_params[2],
+                            batchnorm=model_params[3],
+                            optimizer=model_params[4],
+                            input_regularization=model_params[5],
+                            input_normalization=model_params[6],input_dim=input_dim)
+        print(" - - - - -Training Model on split {} - - - - -".format(split) )
+        split += 1
+        X_train, X_test, y_train, y_test = X[train_index], X[test_index], y[train_index], y[test_index]
+        #tensorboard = TensorBoard(log_dir="logs")
+        history = model.fit(X_train, y_train, epochs=max_epochs,
+                        batch_size=batch_size,use_multiprocessing=True, workers=12,
+                        verbose=1, validation_data=(X_test, y_test))
+        val_df =  pd.DataFrame(history.history)
+        result["val_dfs"].append(val_df)
+        test_df = pd.DataFrame({"true" : y_test, "pred" : [i[0] for i in model.predict(X_test)]})
+        error = MSE(test_df["true"], test_df["pred"])
+        result["MSE"].append(error)
+        del model
+        backend.clear_session()
+        gc.collect()
+    
+    result["mean"] = np.mean(result["MSE"])
+    result["std"] = np.std(result["MSE"])
+    result["model"] = model_params
+    return result
+    
+#load data
+#D1
+df_train = pd.read_csv("train_data.csv", index_col=0)
+#D0 (no dummies)
+df_train_no_neurons = pd.DataFrame(df_train.values[:,:48], columns = df_train.columns.tolist()[:48])
+
+
+#Evaluate all models both for the dataset with c-neurons and without c-neurons 
+results1, results2 = list(), list()
+
+for model in models:
+    results1.append(cross_validate(df_train, model,max_epochs=75))
+    results2.append(cross_validate(df_train_no_neurons, model,max_epochs=75))
+    
+    
+
+
+#The winning models from the architecture evaluation experiment
+winners =[ [64, 32, 16, 8, 4, 2]  ,
+[256, 128, 64, 32, 16] ,[128, 64, 32, 16, 8, 4], 
+[512, 256, 128, 64], 
+[16, 32, 16, 8]]
+
+
+#Now these models will be further improved during multiple runs
+RUN1 = list()
+#lower dropout
+for model in winners:
+    model_params = [model] + [0.001, 0.05, True, 'rms', False, True]
+    RUN1.append(cross_validate(df_train, model_params, batch_size=128, max_epochs = 75))
+    RUN1.append(cross_validate(df_train_no_neurons, model_params, batch_size=128, max_epochs = 75))
+
+#lower lr and more epochs
+for model in winners:
+    model_params = [model] + [0.0001, 0.2, True, 'rms', False, True]
+    RUN1.append(cross_validate(df_train, model_params, batch_size=128, max_epochs = 120))
+    RUN1.append(cross_validate(df_train_no_neurons, model_params, batch_size=128, max_epochs = 120))
+    
+with open("RUN1", "wb") as f:
+    pickle.dump(RUN1, f)
+
+df1 = to_df(RUN1)    
+# best performing models of the second run according to avg loss and std
+    
+winners2 = [[256, 128, 64, 32, 16], [128, 64, 32, 16, 8, 4], [512, 256, 128, 64], [64, 32, 16, 8, 4, 2]]
+#simply more epochs now
+RUN2 = list()
+for model in winners2:
+    model_params = [model] + [0.0001, 0.2, True, 'rms', False, True]
+    RUN2.append(cross_validate(df_train, model_params, batch_size=256, max_epochs = 200))
+    RUN2.append(cross_validate(df_train_no_neurons, model_params, batch_size=256, max_epochs = 200))
+with open("RUN2", "wb") as f:
+    pickle.dump(RUN2, f)
+for model in winners2:
+    model_params = [model] + [0.01, 0.2, True, 'rms', False, True]
+    RUN2.append(cross_validate(df_train, model_params, batch_size=512, max_epochs = 100))
+    RUN2.append(cross_validate(df_train_no_neurons, model_params, batch_size=512, max_epochs = 100))
+with open("RUN2", "wb") as f:
+    pickle.dump(RUN2, f)
+for model in winners2:
+    model_params = [model] + [0.001, 0.2, True, 'nadam', False, True]
+    RUN2.append(cross_validate(df_train, model_params, batch_size=512, max_epochs = 100))
+    RUN2.append(cross_validate(df_train_no_neurons, model_params, batch_size=512, max_epochs = 100))
+with open("RUN2", "wb") as f:
+    pickle.dump(RUN2, f)
+    
+df2 = to_df(RUN2)   
+    
+winners3 = [[256, 128, 64, 32, 16]]
+#third run more epochs and small decrease in lr
+RUN3 = list()
+for model in winners3:
+    model_params = [model] + [0.00009, 0.2, True, 'rms', False, True]
+    RUN3.append(cross_validate(df_train, model_params, batch_size=256, max_epochs = 300))
+    RUN3.append(cross_validate(df_train_no_neurons, model_params, batch_size=256, max_epochs = 300))
+with open("RUN3", "wb") as f:
+    pickle.dump(RUN3, f)
+
+df3 = to_df(RUN3)
+
+
+
+
+
+
+
+
+
+
+
+
+##########(ONLY RUN THIS PART FOR REPRODUCING THE FINAL MODEL)
+
+##### - - -  Final Model - - -  ##### 
+### Now the best model is retrained on the entire evaluation set before it is tested
+
+model_params = [[256,128,64,32,16], 0.00009, 0.2, True, 'rms', False, True]
+df = df_train_no_neurons.copy()
+
+
+
+
+## finally fit the model on the entire val data
+input_dim = df.shape[1]-1
+X, y = df.values[:,1:], df.values[:,0]
+max_epochs = 250
+batch_size = 256
+
+final_model = build_model(hidden_layers=model_params[0],
+                            lr=model_params[1],
+                            dropout=model_params[2],
+                            batchnorm=model_params[3],
+                            optimizer=model_params[4],
+                            input_regularization=model_params[5],
+                            input_normalization=model_params[6],input_dim=input_dim)
+
+
+final_model.fit(X, y, epochs=max_epochs,
+                batch_size=batch_size,use_multiprocessing=True, workers=12,
+                verbose=1, shuffle=True)
+
+## Now predict on the test data
+start_testing = '2017-08-08'
+#load testing data
+with open("formatted_data", "rb") as f:
+    data = pickle.load(f)
+    
+#create placeholder for the predictions  
+evaluation = { ticker : {"true" : None, "AR(2)" : None, "T-1" : None, "ANN" : None} for ticker in data }
+
+for stock in data:
+    dat = data[stock][start_testing:].copy()
+    if input_dim == 47:
+        dat = pd.DataFrame(dat.values[:,:48], columns = dat.columns.tolist()[:48])
+    
+    X, y = dat.values[:,1:], dat.values[:,0]
+    pred = final_model.predict(X)
+    evaluation[stock]["ANN"] = pred
+
+    
+#safe data
+with open("test_eval", "wb") as f:
+    pickle.dump(evaluation, f)
+

@@ -1,0 +1,502 @@
+
+%matplotlib inline
+import matplotlib.pyplot as plt
+plt.style.use("seaborn-pastel")
+plt.rcParams["figure.figsize"] = (12, 9)
+plt.rcParams["figure.dpi"] = 120
+from copy import deepcopy as copy
+from tqdm import tqdm
+import pickle
+import pandas as pd
+import os
+import numpy as np
+os.chdir(b"data and code\data")
+#load pricedata
+with open("companies_prices", "rb") as f:
+    companies = pickle.load(f)
+
+
+#add query data from directory
+for file in os.listdir():
+    for company in companies:
+        if file == company["ticker"]:
+            with open(file, "rb") as f:
+                data = pickle.load(f) 
+            company["query_data"] = data["query_data"]
+
+
+companies = [_ for _ in companies if "query_data" in _ and len(_["query_data"]) != 0]
+print("Total companies collected : ", len(companies))    
+
+companies_copy = copy(companies)
+## Now i check if there are any companies where name is equivalent to ticker
+# which will result in only 4 instead of 6 query series'
+companies =  [ _ for _ in companies if _["name"] != _["ticker"] ]
+print("Total companies after removing companies, where ticker == name : ", len(companies))
+   
+   
+## Check the availability distribution of the queries
+# This can be interesting          
+qdist = {"ticker" : 0, "name" : 0, "ticker share":0, "ticker stock" : 0,
+         "name stock" : 0, "name share" : 0 }
+
+for c in companies:
+    ticker, name = c["ticker"], c["name"]
+    for q in c["query_data"]:
+        if not c["query_data"][q] is None:
+            if q == ticker:
+                qdist["ticker"] += 1
+            elif q == name:
+                qdist["name"] += 1
+            elif q == ticker+" "+"share":   
+                qdist["ticker share"] += 1
+            elif q == ticker+" "+"stock":
+                qdist["ticker stock"] += 1
+            elif q == name+" "+"share":
+                qdist["name share"] += 1
+            elif q == name+" "+"stock":
+                qdist["name stock"] += 1
+                
+print(pd.Series(qdist))
+# A look at qdist shows that there are 183 companies without record for name+share
+# Also, ticker+share is not present for a total of 142
+# I would say that this indicates that "share" was probably a bad choice for a suffix.
+
+           
+
+# Now i will check how much "complete" companies there are and how they are distributred
+cdist = pd.Series([len([q for q in i["query_data"].values() if q is not None]) for i in companies])
+cdist.hist()
+
+
+## Now I will subset to a set of companies  for the second experiment, where the "share" queries  are excluded in favor of a larger data set
+## "companies" <- Experiment with 228 companies which all have complete query record "share" + "stock"
+## "companies_1" <- Experiment with "stock" suffix only
+
+companies_1 = copy(companies)
+for company in companies_1:
+    company["query_data"] = { query : company["query_data"][query] for query in company["query_data"] if any(["share" not in query,
+                  query == "Huntington Bancshares",
+                  query == "Huntington Bancshares stock"]) }
+    
+## Another experiment, here only TICKER and TICKER stock is used    
+# companies_2 = copy(companies_copy)
+# for company in companies_2:
+#     ticker = company["ticker"]
+#     company["query_data"] = { query : company["query_data"][query] for query in company["query_data"] if any([query==ticker, query==ticker+" stock"])}
+    
+    
+## remove unsufficient records
+companies = [ _ for _ in companies if len([ i for i in _["query_data"].values() if i is None ]) == 0 ]
+companies_1 = [ _ for _ in companies_1 if len([ i for i in _["query_data"].values() if i is None ]) == 0 ]
+#companies_2 = [ _ for _ in companies_2 if len([ i for i in _["query_data"].values() if i is None ]) == 0 ]
+      
+
+## check consistency
+corrupt = list()
+for i in companies_1:
+    ticker, name = i["ticker"] ,i["name"]
+    if len(i["query_data"]) != 4 or list(i["query_data"].keys()) != [ ticker, name, ticker+" stock", name+" stock" ]:
+        print(companies_1.index(i))
+        corrupt.append(i)
+companies_1 = [i for i in companies_1 if i not in corrupt]
+
+# corrupt = list()
+# for i in companies_2:
+#     ticker, name = i["ticker"] ,i["name"]
+#     if len(i["query_data"]) != 2 or list(i["query_data"].keys()) != [ ticker, ticker+" stock"]:
+#         print(companies_2.index(i))
+#         corrupt.append(i)
+# companies_2 = [i for i in companies_2 if i not in corrupt]
+
+corrupt = list()
+for i in companies:
+    ticker, name = i["ticker"] ,i["name"]
+    if len(i["query_data"]) !=6 or list(i["query_data"].keys()) != [ ticker, name, ticker+" stock",ticker+" share", name+" stock", name+" share"]:
+        print(companies.index(i))
+        corrupt.append(i)
+companies = [i for i in companies if i not in corrupt]
+
+# len(companies_2)
+
+len(companies_1)
+
+len(companies)
+   
+
+
+
+
+
+
+# There are ca 225 companies left which provide complete record for all query series
+companies = [i for i in companies if len([q for q in i["query_data"].values() if q is not None]) == 6]
+print("Total Companies with complete query record : ", len(companies))
+
+
+
+
+
+        
+
+
+## Impute zeros with ones
+# While i am an opponent to data imputation in general, in this case the imputation of
+# zero values is being done under the mild assumption that there arent days with 0 queries
+# This is reasonable i think
+# Additionally, zero values would result in malformed data after log + pct - change - transform
+# As imputation rule i use : 1 if minval > 1 else minval 
+# Todo : ask conrad if this is legit
+
+def impute(df):
+    minval = df[df > 0].min().values[0]
+    if minval < 1:
+        return df.replace(0, minval)
+    else:
+        return df.replace(0, 1)
+    
+    
+for company in companies:
+    for q in company["query_data"]:
+        company["query_data"][q] = impute(company["query_data"][q])
+
+for company in companies_1:
+    for q in company["query_data"]:
+        company["query_data"][q] = impute(company["query_data"][q])
+        
+# for company in companies_2:
+#     for q in company["query_data"]:
+#         company["query_data"][q] = impute(company["query_data"][q])
+        
+        
+##also for volume col, since i have found zero-values within this series'
+        # this is trivial since there are only 2 companies for which volume gets 0 in one t
+# After investigation I have found that it is indeed possible to have trading volumes of 0
+## this is an absolute exception (2 companies only) and this values will therefore be imputed
+## Imputation rule : use previous value -> "ffill"
+for company in companies:
+    company["price_data"]["volume"] = company["price_data"]["volume"].replace(0, method="ffill")
+    
+for company in companies_1:
+    company["price_data"]["volume"] = company["price_data"]["volume"].replace(0, method="ffill")
+    
+# for company in companies_2:
+#     company["price_data"]["volume"] = company["price_data"]["volume"].replace(0, method="ffill")
+        
+        
+            
+## Now i merge the data s.t. there is one df per company
+for company in companies:
+    dfs = []
+    for q in company["query_data"]:
+        dfs.append(company["query_data"][q])
+    company["data"] = pd.merge(dfs[0], dfs[1], right_index=True, left_index=True)
+    for df in dfs[2:]:
+        company["data"] = pd.merge(company["data"], df, left_index=True, right_index=True)
+    company["data"] = pd.merge(company["data"], company["price_data"]["adjclose"], right_index=True, left_index=True)
+    company["data"] = pd.merge(company["data"], company["price_data"]["volume"], right_index=True, left_index=True)
+    company["data"] = company["data"].rename(columns = {i : i.replace(": (Worldwide)", "") for i in company["data"].columns if ": (Worldwide)" in i})
+            
+for company in companies_1:
+    dfs = []
+    for q in company["query_data"]:
+        dfs.append(company["query_data"][q])
+    company["data"] = pd.merge(dfs[0], dfs[1], right_index=True, left_index=True)
+    for df in dfs[2:]:
+        company["data"] = pd.merge(company["data"], df, left_index=True, right_index=True)
+    company["data"] = pd.merge(company["data"], company["price_data"]["adjclose"], right_index=True, left_index=True)
+    company["data"] = pd.merge(company["data"], company["price_data"]["volume"], right_index=True, left_index=True)
+    company["data"] = company["data"].rename(columns = {i : i.replace(": (Worldwide)", "") for i in company["data"].columns if ": (Worldwide)" in i})
+
+# for company in companies_2:
+#     dfs = []
+#     for q in company["query_data"]:
+#         dfs.append(company["query_data"][q])
+#     company["data"] = pd.merge(dfs[0], dfs[1], right_index=True, left_index=True)
+#     for df in dfs[2:]:
+#         company["data"] = pd.merge(company["data"], df, left_index=True, right_index=True)
+#     company["data"] = pd.merge(company["data"], company["price_data"]["adjclose"], right_index=True, left_index=True)
+#     company["data"] = pd.merge(company["data"], company["price_data"]["volume"], right_index=True, left_index=True)
+#     company["data"] = company["data"].rename(columns = {i : i.replace(": (Worldwide)", "") for i in company["data"].columns if ": (Worldwide)" in i})            
+
+
+# Rename all company vars to "SHARE STOCK" from "AAPL stock" (exampliefied)
+
+for company in companies:   
+    ticker, name = company["ticker"], company["name"]
+    if name in ["Kohl's", "Lowe's", "Macy's", "McDonald's", "Moody's"]:
+        name = name.replace("'", "")
+    company["data"] = company["data"].rename(columns = {ticker:"TICKER", name:"NAME",
+           '{} stock'.format(ticker) : "TICKER stock" , '{} share'.format(ticker) : "TICKER share",
+           '{} stock'.format(name) : "NAME stock", '{} share'.format(name) : "NAME share"})
+    
+for company in companies_1:   
+    ticker, name = company["ticker"], company["name"]
+    if name in ["Kohl's", "Lowe's", "Macy's", "McDonald's", "Moody's"]:
+        name = name.replace("'", "")
+    company["data"] = company["data"].rename(columns = {ticker:"TICKER", name:"NAME",
+           '{} stock'.format(ticker) : "TICKER stock" , '{} share'.format(ticker) : "TICKER share",
+           '{} stock'.format(name) : "NAME stock", '{} share'.format(name) : "NAME share"})
+
+# for company in companies_2:   
+#     ticker, name = company["ticker"], company["name"]
+#     if name in ["Kohl's", "Lowe's", "Macy's", "McDonald's", "Moody's"]:
+#         name = name.replace("'", "")
+#     company["data"] = company["data"].rename(columns = {ticker:"TICKER", name:"NAME",
+#            '{} stock'.format(ticker) : "TICKER stock" , '{} share'.format(ticker) : "TICKER share",
+#            '{} stock'.format(name) : "NAME stock", '{} share'.format(name) : "NAME share"})                    
+           
+#There is an exception for a company name called e trad
+for company in companies_1:
+    if company["name"] == 'E*Trade':
+        company["data"].columns = ['TICKER', 'NAME', 'TICKER stock', 'NAME stock', 'adjclose', 'volume']
+        
+        
+
+       
+## log-pct_change - transform
+
+for company in companies:
+     company["log_data"] = np.log(1 + company["data"].pct_change())
+     company["log_data"]["log(R)"] = company["log_data"]["adjclose"]
+     del company["log_data"]["adjclose"]
+     company["log_data"] = company["log_data"].dropna()
+
+for company in companies_1:
+     company["log_data"] = np.log(1 + company["data"].pct_change())
+     company["log_data"]["log(R)"] = company["log_data"]["adjclose"]
+     del company["log_data"]["adjclose"]
+     company["log_data"] = company["log_data"].dropna()
+     
+# for company in companies_2:
+#      company["log_data"] = np.log(1 + company["data"].pct_change())
+#      company["log_data"]["log(R)"] = company["log_data"]["adjclose"]
+#      del company["log_data"]["adjclose"]
+#      company["log_data"] = company["log_data"].dropna()
+# after looking at the distributions of the transformed data i understand why modeling
+# log returns is so common
+     
+# Now i want to make sure there is no data being corrupted by the transformation
+# This is extremely important since the data is still in the format of a multivariate time series
+corrupt = list()
+for c in companies:
+    # More than 1 NaN indicate that something has gone wrong, 1 NaN is normal (first row)
+    if len(c["log_data"]) - len(c["log_data"].dropna()) > 1:
+        corrupt.append(c)
+print("Corrupted data : ", len(corrupt)) if len(corrupt) > 0 else print("All good")
+
+corrupt = list()
+for c in companies_1:
+    # More than 1 NaN indicate that something has gone wrong, 1 NaN is normal (first row)
+    if len(c["log_data"]) - len(c["log_data"].dropna()) > 1:
+        corrupt.append(c)
+print("Corrupted data : ", len(corrupt)) if len(corrupt) > 0 else print("All good")
+
+# corrupt = list()
+# for c in companies_2:
+#     # More than 1 NaN indicate that something has gone wrong, 1 NaN is normal (first row)
+#     if len(c["log_data"]) - len(c["log_data"].dropna()) > 1:
+#         corrupt.append(c)
+# print("Corrupted data : ", len(corrupt)) if len(corrupt) > 0 else print("All good")
+
+
+    
+
+
+## Now all company data will be sliced in order to make Monday the very first day in the dataframe
+ ## By doing that I ensure that the vola is equally calculated across Monday - End
+ ## ALL company time series' must start with Monday
+
+ 
+for company in companies:
+    company["log_data"] = company["log_data"][[i for i in company["log_data"].index if i.weekday() == 0][0]:]
+    company["data"] = company["data"][[i for i in company["data"].index if i.weekday() == 0][0]:]
+
+for company in companies_1:
+    company["log_data"] = company["log_data"][[i for i in company["log_data"].index if i.weekday() == 0][0]:]
+    company["data"] = company["data"][[i for i in company["data"].index if i.weekday() == 0][0]:]
+
+# for company in companies_2:
+#     company["log_data"] = company["log_data"][[i for i in company["log_data"].index if i.weekday() == 0][0]:]
+#     company["data"] = company["data"][[i for i in company["data"].index if i.weekday() == 0][0]:]
+
+
+
+
+
+# # #  DATA TRANSFORMATION # # #
+# Now the time has come to actually transform the data and remove the time dependency 
+# to calculate the vola i use the sum of squared  deviations from the 7day mean
+# this is equivalent to the variance since n=7 is fixed
+
+ #indexed by T, while days are indexed by t
+
+def aggregate(company, company_array, max_target_lag = 3,
+              max_lag = 14, window_size = "7d", company_neurons = True):
+    data = company["log_data"].copy()
+    SE = lambda array : np.sum((array - np.mean(array))**2)
+    min_lag = int(window_size[0]) if len(window_size) == 2 else int(window_size[0:2])
+    #New dataframe
+    df = pd.DataFrame()
+    df["V(T)"] = data["log(R)"].resample(window_size, label="right", closed="left").apply(SE)
+    
+    for lag in range(1, max_target_lag+1):
+        df["V(T-{})".format(lag)] = df["V(T)"].shift(lag)
+    
+    for col in data:
+        for lag in range(min_lag, max_lag+1):
+            df[col+"(t-{})".format(lag)] = data[col].shift(lag)
+            df[col+"(t-{})".format(lag)][-1] = data[col][df.index[-1] - pd.DateOffset(lag)]
+    
+    df.dropna(inplace=True)
+    df = df.loc[:, (df != 0).any(axis=0)]
+    if company_neurons:
+        for ticker in [ _["ticker"] for _ in company_array ]:       
+            if ticker == company["ticker"]:
+                df[ticker] = [ 1 for i in range(len(df)) ]
+            else:
+                df[ticker] = [ 0 for i in range(len(df)) ]
+    
+    return df
+
+def ensure_consistency(company_array, company_neurons=True, start_testing='2017-08-08',method=aggregate):
+    corrupt = list()
+    aapl_transformed = method([i for i in company_array if i["ticker"] == "AAPL"][0], 
+                                 company_array=company_array, company_neurons=company_neurons)
+    correct_shape = aapl_transformed.shape[1]
+    correct_cols = aapl_transformed.columns
+    for company in company_array:
+        agg = method(company, company_array=company_array, company_neurons=company_neurons)
+        if agg.shape[1] != correct_shape:
+            print("wrong shape :: ", company_array.index(company))
+            print(company["name"])
+            corrupt.append(company)
+        if company["log_data"].index.weekday[0] != 0:
+            print("wrong index start :: ", company_array.index(company))
+            print(company["name"])
+            corrupt.append(company)
+        if list(agg.columns) != list(correct_cols):
+            print("wrong columns :: ", company_array.index(company))
+            print(company["name"])
+            corrupt.append(company)
+        if agg.index[0] > pd.Timestamp(start_testing):
+            print("not enough data points.")
+            print(company["name"])
+            corrupt.append(company)
+    if len(corrupt) == 0:
+        print("All good")
+    return [ _ for _ in company_array if _ not in corrupt ]
+
+
+# def aggregate_dist_wise(company, company_array, lags = 4, window_size = "7d",company_neurons=True):
+#     #Now i will also try to resample the query data like it is being done with the log returns
+#     ## 7d(t1,t2,...,t7)log returns -> V(T)
+#     ## 7d(t1,t2,...,t7)query data -> Q_i(T)
+#     data = company["log_data"].copy()
+#     SSE = lambda array : np.sum((array - np.mean(array))**2)
+#     min_lag = int(window_size[0]) if len(window_size) == 2 else int(window_size[0:2])
+#     #New dataframe
+#     df = pd.DataFrame()
+#     for col in data:
+#         if col == "log(R)":
+#             df["VOLA"] = data[col].resample(window_size, label="right", closed="left").apply(SSE)
+#         else:
+#             df[col] = data[col].resample(window_size, label="right", closed="left").apply(SSE)
+#     for col in df:
+#         for lag in range(1, lags+1):
+#             name = col+"(T-{})".format(lag)
+#             df[name] = df[col].shift(lag)
+#     df.dropna(inplace=True)
+#     for col in df:
+#         if all(["T-" not in col, col!= "VOLA" ]):
+#             del df[col]
+#     if company_neurons:
+#         for ticker in [ _["ticker"] for _ in company_array ]:       
+#             if ticker == company["ticker"]:
+#                 df[ticker] = [ 1 for i in range(len(df)) ]
+#             else:
+#                 df[ticker] = [ 0 for i in range(len(df)) ]
+    
+#     return df
+
+
+
+
+def concat(company_array, company_neurons=True,
+           start_testing = '2017-08-08',method=aggregate ):
+    train = []
+    formatted_data = dict()
+   # company_array = [ c for c in company_array if ]
+    aapl_transformed = method([i for i in company_array if i["ticker"] == "AAPL"][0], 
+                                 company_array=company_array, company_neurons=company_neurons)
+    correct_shape = aapl_transformed.shape[1]
+    for company in tqdm(company_array): 
+        transformed_data = method(company, company_array=company_array,
+                                     company_neurons=company_neurons)
+        if transformed_data.shape[1] == correct_shape:
+            formatted_data[company["ticker"]] = transformed_data
+            train_data = transformed_data[:start_testing]
+            train.append(train_data.values)  
+    agg = np.vstack(train)
+    features = list()
+    for i in aapl_transformed.columns:
+        if "AAPL" in i:
+            features.append(i.replace("AAPL", "TICKER"))
+        elif "Apple" in i:
+            features.append(i.replace("Apple", "NAME"))
+        else:
+            features.append(i)
+    df = pd.DataFrame(agg, columns=features)
+    df["AAPL"] = df["TICKER"]
+    del df["TICKER"]
+    return {"train" : df,
+            "formatted_data" : formatted_data }
+
+        
+
+
+## Experiment 1
+companies_1 = ensure_consistency(companies_1,method=aggregate)
+## Now I will seperate the test data from the training data
+data = concat(companies_1, company_neurons=True, start_testing = '2017-08-08')
+train, format_data = data["train"], data["formatted_data"]
+
+
+#save model training data   
+train.to_csv("train_data.csv")
+#save formatted data for testing and for the baseline models
+with open("formatted_data", "wb") as f:
+    pickle.dump(format_data, f)
+    
+
+# #Experiment 2 (only ticker and ticker stock)
+# ## Inefficient But safe double consistency check for each of the data subset
+# companies_2 = ensure_consistency(companies_2,method=aggregate)
+# ## Now I will seperate the test data from the training data
+# data = concat(companies_2, company_neurons=True, start_testing = '2017-08-08')
+# train, format_data = data["train"], data["formatted_data"]
+
+
+# #save model training data   
+# train.to_csv("train_data_reduced.csv")
+# #save formatted data for testing and for the baseline models
+# with open("formatted_data_reduced.csv", "wb") as f:
+#     pickle.dump(format_data, f)
+    
+# #Experiment 3
+# ## Inefficient But safe double consistency check for each of the data subset
+# companies_3 = ensure_consistency(companies_1,method=aggregate_dist_wise)
+# ## Now I will seperate the test data from the training data
+# data = concat(companies_3, company_neurons=True, start_testing = '2017-08-08',method=aggregate_dist_wise)
+# train, format_data = data["train"], data["formatted_data"]
+
+
+# #save model training data   
+# train.to_csv("train_data_dist_wise.csv")
+# #save formatted data for testing and for the baseline models
+# with open("formatted_data_dist_wise.csv", "wb") as f:
+#     pickle.dump(format_data, f)
+
+
+
+    
